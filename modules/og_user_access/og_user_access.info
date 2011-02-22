@@ -1,0 +1,6 @@
+name = Organic groups member roles and permissions
+description = "Backport of group member roles and permissions from og-7.x."
+package = "Organic groups"
+dependencies[] = dbtng
+dependencies[] = og
+core = 6.x
