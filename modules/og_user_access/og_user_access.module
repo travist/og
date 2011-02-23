@@ -1,4 +1,28 @@
 <?php
+// $Id$
+
+/**
+ * @file
+ * This is a backport of og-7.x Group roles and permissions.
+ *
+ * This module intentionally implements functions in the og 'namespace'
+ *  to maintain API compatibility with 7.x.
+ *
+ * --- API Changes ---
+ *
+ * Modules must add and remove roles they implement on enable and uninstall
+ * respectively because D6 doesn't implement hook_modules_enabled() and
+ * hook_modules_uninstalled().
+ *  - @see og_set_global_access_module();
+ *  - @see og_permissions_delete_by_module()
+ * @todo - /BACKPORT/ Consider checking on menu_rebuild (hook_menu_alter).
+ *
+ *
+ */
+
+// Re-implement needed Drupal 7 API functions in a seperate file.
+require_once dirname(__FILE__) . '/includes/d7.api.inc';
+
 
 /**
  * Group default roles and permissions field.
@@ -25,6 +49,28 @@ define('OG_AUTHENTICATED_ROLE', 'member');
 define('OG_ADMINISTRATOR_ROLE', 'administrator member');
 
 /**
+ * Invalidate cache.
+ *
+ * @param $gids
+ *   Array with group IDs that their cache should be invalidated.
+ */
+function og_invalidate_cache($gids = array()) {
+  // Reset static cache.
+  $caches = array(
+    'og_user_access',
+//    'og_get_group_ids',
+    'og_user_role_permissions',
+  );
+
+  foreach ($caches as $cache) {
+    drupal_static_reset($cache);
+  }
+
+  // Let other Group modules know we invalidate cache.
+  module_invoke_all('og_invalidate_cache', $gids);
+}
+
+/**
  * Determine whether a user has a given privilege.
  *
  * @param $gid
@@ -49,8 +95,7 @@ function og_user_access($gid, $string, $account = NULL) {
   }
 
   global $user;
-  // @todo - /BACKPORT/ Implement static cache reset functionality, free in D7.
-  static $perm = array();
+  $perm = &drupal_static(__FUNCTION__, array());
 
   if (empty($account)) {
     $account = drupal_clone($user); // @todo /BACKPORT/ Is a clone really needed here?
@@ -133,8 +178,7 @@ function og_is_group_default_access($gid) {
  *   permission strings for the given role ID.
  */
 function og_user_role_permissions($roles = array()) {
-  // @todo - /BACKPORT/ Implement static cache reset functionality, free in D7.
-  static $cache = array();
+  $cache = &drupal_static(__FUNCTION__, array());
 
   $role_permissions = $fetch = array();
 
