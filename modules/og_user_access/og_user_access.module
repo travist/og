@@ -15,9 +15,10 @@
  * hook_modules_uninstalled().
  *  - @see og_set_global_access_module();
  *  - @see og_permissions_delete_by_module()
- * @todo - /BACKPORT/ Consider checking on menu_rebuild (hook_menu_alter).
+ * @todo - /BACKPORT/ Consider checking on menu_rebuild hook_menu_alter().
  *
- *
+ * @todo - /BACKPORT/ Find alternate implementation for hook_node_access().
+ *  - @see og_node_access();
  */
 
 // Re-implement needed Drupal 7 API functions in a seperate file.
@@ -47,6 +48,93 @@ define('OG_AUTHENTICATED_ROLE', 'member');
  * The role name of group administrator.
  */
 define('OG_ADMINISTRATOR_ROLE', 'administrator member');
+
+//------------------
+// Hooks
+/**
+ * Implementation of hook_perm().
+ *
+ * @todo - /BACKPORT/ Not sure if this is needed.
+ */
+function og_user_access_perm() {
+  return array('administer group');
+}
+
+/**
+ * Implementation of hook_og_permission().
+ */
+function og_og_permission() {
+  // Generate standard node permissions for all applicable node types.
+  $perms = array();
+
+  $perms['update group'] = array(
+    'title' => t('Edit group'),
+    'description' => t('Edit the group node.'),
+    'default role' => array(OG_ADMINISTRATOR_ROLE),
+  );
+  $perms['administer group'] = array(
+    'title' => t('Administer group'),
+    'description' => t('Manage or block users, and manage their role assignments in the group.'),
+    'default role' => array(OG_ADMINISTRATOR_ROLE),
+  );
+
+  foreach (node_get_types() as $type) {
+    $perms = array_merge($perms, og_list_permissions($type));
+  }
+
+  return $perms;
+}
+
+
+/**
+ * Implementation of hook_og_default_roles()
+ */
+function og_og_default_roles() {
+  return array(OG_ADMINISTRATOR_ROLE);
+}
+
+/**
+ * Implement hook_node_access()
+ * @todo - /BACKPORT/ This hook doesn't exist in D6.
+ */
+function og_node_access($node, $op, $account) {
+  // If not a group type or the operation is node creation which still has no
+  // groups so we can't check it yet, we ignore the access.
+  $return = NODE_ACCESS_IGNORE;
+
+  $type = is_string($node) ? $node : (is_array($node) ? $node['type'] : $node->type);
+  if (in_array($op, array('update', 'delete'))) {
+    if (og_is_group_type('node', $type) && $group = og_get_group('node', $node->nid)) {
+      $return = NODE_ACCESS_DENY;
+      // The node is a group.
+      if (og_user_access($group->gid, $op . ' group', $account)) {
+        $return = NODE_ACCESS_ALLOW;
+      }
+    }
+    // A single content type can act as a group and as group content, so make
+    // sure that even if the user doesn't have access on the group itself,
+    // further access checks are performed.
+    // However if we already have access, then skip the following access checks.
+    if ($return != NODE_ACCESS_ALLOW && og_is_group_content_type('node', $type) && $gids = og_get_entity_groups('node', $node)) {
+      $return = NODE_ACCESS_DENY;
+      // We don't have a context, so we need to get all the permissions
+      // of all the groups. We don't intersect with the user's group, as
+      // groups might allow anonymous members access.
+      foreach ($gids as $gid) {
+        if (og_user_access($gid, "administer group", $account) ||
+          // Any content.
+          og_user_access($gid, "$op any $type content", $account) ||
+          // Users own content.
+          (og_user_access($gid, "$op own $type content", $account) && $node->uid == $account->uid)) {
+          $return =  NODE_ACCESS_ALLOW;
+          break;
+        }
+      }
+    }
+  }
+
+  return $return;
+}
 
 /**
  * Invalidate cache.
@@ -107,7 +195,7 @@ function og_user_access($gid, $string, $account = NULL) {
   }
 
   // Administer Group permission.
-  if (user_access('administer group', $account)) {
+  if (user_access('administer organic groups', $account)) {
     return TRUE;
   }
 
@@ -776,5 +864,45 @@ function og_get_global_permissions() {
   $roles = og_get_global_roles();
 
   $perms = og_user_role_permissions($roles);
+  return $perms;
+}
+
+/**
+ * Helper function to generate standard node permission list for a given type.
+ *
+ * @param $type
+ *   The machine-readable name of the node type.
+ * @return array
+ *   An array of permission names and descriptions.
+ */
+function og_list_permissions($type) {
+  $perms = array();
+
+  // Check type is of group content.
+  if (og_is_group_type($type)) {
+    $info = node_get_types('type', $type);
+    $type = check_plain($info->type);
+
+    // Build standard list of node permissions for this type.
+    $perms = array(
+      "update own $type content" => array(
+        'title' => t('Edit own %type_name content', array('%type_name' => $info->name)),
+      ),
+      "update any $type content" => array(
+        'title' => t('Edit any %type_name content', array('%type_name' => $info->name)),
+      ),
+      "delete own $type content" => array(
+        'title' => t('Delete own %type_name content', array('%type_name' => $info->name)),
+      ),
+      "delete any $type content" => array(
+        'title' => t('Delete any %type_name content', array('%type_name' => $info->name)),
+      ),
+    );
+
+    // Add default permissions.
+    foreach ($perms as $key => $value) {
+      $perms[$key]['default role'] = array(OG_AUTHENTICATED_ROLE);
+    }
+  }
   return $perms;
 }
