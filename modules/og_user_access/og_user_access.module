@@ -252,6 +252,140 @@ function og_user_roles($gid = 0, $permission = NULL, $force_group = FALSE) {
 }
 
 /**
+ * Get global roles - roles that belong to non-existent group ID 0.
+ *
+ * @return
+ *   A keyed array with role Id as key and role name as value.
+ */
+function og_get_global_roles() {
+  return og_user_roles();
+}
+
+/**
+ * Get array of default roles, keyed by their declaring module.
+ */
+function og_get_default_roles($include = TRUE) {
+  $roles = array();
+  foreach (module_implements('og_default_roles') as $module) {
+    $roles[$module] = module_invoke($module, 'og_default_roles');
+  }
+
+  // Allow other modules to alter the defult roles, excpet of the anonymous and
+  // authenticated.
+  drupal_alter('og_default_roles', $roles);
+
+  if ($include) {
+    $roles += array('og' => array());
+    array_unshift($roles['og'], OG_ANONYMOUS_ROLE, OG_AUTHENTICATED_ROLE);
+  }
+
+  return $roles;
+}
+
+/**
+ * Add default roles and permissions of a module to the global permissions.
+ *
+ * This function is called whenever a module is enabled. Calling this function
+ * directly will re-assign permissions to thier default roles.
+ *
+ * @param $module
+ *   The module name.
+ * @return
+ *   Array with the global roles, as new records might have been added.
+ */
+function og_set_global_access_module($module) {
+  $default_roles = og_get_default_roles();
+  $global_roles = og_get_global_roles();
+  $permissions = og_get_permissions();
+
+  // The roles that should be added.
+  $roles_to_add = array();
+
+  if (empty($global_roles)) {
+    // Add all the roles, there are no roles defined yet. This is probably
+    // becuase OG is only being installed.
+    $roles_to_add = reset($default_roles);
+  }
+  elseif (!empty($default_roles[$module])) {
+    // Diff the roles that should be added with the ones already defined as
+    // global roles.
+    $roles_to_add = array_diff($default_roles[$module], $global_roles);
+  }
+
+  // Add a new global role.
+  if (!empty($roles_to_add)) {
+    foreach ($roles_to_add as $name) {
+      $role = og_create_global_role($name);
+      $global_roles[$role->rid] = $name;
+    }
+  }
+
+  // If there are permissions defined, make sure they were not applied already,
+  // as it might happen if a module was disabled and re-enabled.
+  $perms_to_add = array();
+  $perms_to_add_by_rid = array();
+
+  foreach ($permissions as $key => $value) {
+    if ($value['module'] == $module) {
+      $perms_to_add[$key] = $value;
+    }
+  }
+
+  if ($perms_to_add) {
+    // Get the assigned permissions of the global roles.
+    $global_roles_perms = og_user_role_permissions($global_roles);
+
+    // Get the roles keyed by thier name.
+    $global_roles_flip = array_flip($global_roles);
+    foreach ($perms_to_add as $key => $value) {
+      if (!empty($value['default role'])) {
+        // Don't try to assign permissions that are already assigned.
+        foreach ($value['default role'] as $role) {
+          $rid = $global_roles_flip[$role];
+          if (empty($global_roles_perms[$rid][$key])) {
+            // Get the  permissions to be added in the form:
+            // array(
+            //   '1' => array( // '1' is the role ID.
+            //     'perm_foo' => 'perm_foo',
+            //     'perm_bar' => 'perm_bar',
+            //    ),
+            // );
+            $perms_to_add_by_rid[$rid][$key] = $key;
+          }
+        }
+      }
+    }
+  }
+
+  if ($perms_to_add_by_rid) {
+    foreach ($perms_to_add_by_rid as $rid => $perms) {
+      // Assign the permissions to the roles.
+      og_user_role_change_permissions($rid, $perms);
+    }
+  }
+
+  return $global_roles;
+}
+
+
+/**
+ * Add a new global role - a role associated to group ID 0.
+ *
+ * @param $name
+ *   The role name.
+ * @return
+ *   The role object populated iwth the role ID.
+ */
+function og_create_global_role($name) {
+  $role = new stdClass;
+  $role->name = $name;
+  $role->gid = 0;
+
+  og_user_role_save($role);
+  return $role;
+}
+
+/**
  * Get all roles of a user in a certain group.
  *
  * @param $gid
@@ -287,4 +421,360 @@ function og_get_user_roles($gid, $uid = NULL, $include = TRUE) {
   $roles = $roles + dbtng_query("SELECT rid, rid FROM {og_users_roles} WHERE uid = :uid AND gid = :gid", array(':uid' => $uid, ':gid' => $gid))->fetchAllKeyed();
 
   return $roles;
+}
+
+/**
+ * Get all the users with certain roles in a group.
+ *
+ * @param $gid
+ *   The group unique ID.
+ * @param $roles
+ *   Array with the role IDs to query.
+ */
+function og_get_users_by_roles($gid, $rids = array()) {
+  $query = db_select('og_users_roles', 'og_users_roles');
+  return $query->fields('og_users_roles', array('uid'))
+    ->condition('gid', $gid)
+    ->condition('rid', $rids, 'IN')
+    ->execute()
+    ->fetchAll();
+}
+
+/**
+ * Fetch a user role from database.
+ *
+ * @param $role
+ *   An integer with the role ID.
+ * @return
+ *   A fully-loaded role object if a role with the given name or ID
+ *   exists, FALSE otherwise.
+ */
+function og_user_role_load($rid) {
+  return db_select('og_role', 'r')
+    ->fields('r')
+    ->condition('rid', $rid)
+    ->execute()
+    ->fetchObject();
+}
+
+/**
+ * Save a user role to the database.
+ *
+ * @param $role
+ *   A role object to modify or add. If $role->rid is not specified, a new
+ *   role will be created.
+ * @return
+ *   Status constant indicating if role was created or updated.
+ *   Failure to write the user role record will return FALSE. Otherwise.
+ *   SAVED_NEW or SAVED_UPDATED is returned depending on the operation
+ *   performed.
+ */
+function og_user_role_save($role) {
+  if ($role->name) {
+    // Prevent leading and trailing spaces in role names.
+    $role->name = trim($role->name);
+  }
+  if (!empty($role->rid) && $role->name) {
+    $status = drupal_write_record('og_role', $role, 'rid');
+    module_invoke_all('og_user_role_update', $role);
+  }
+  else {
+    $status = drupal_write_record('og_role', $role);
+    module_invoke_all('og_user_role_insert', $role);
+  }
+
+  og_invalidate_cache();
+
+  return $status;
+}
+
+/**
+ * Delete a user role from database.
+ *
+ * @param $role
+ *   An integer with the role ID.
+ */
+function og_user_role_delete($rid) {
+  $role = og_user_role_load($rid);
+
+  db_delete('og_role')
+    ->condition('rid', $rid)
+    ->execute();
+  db_delete('og_role_permission')
+    ->condition('rid', $rid)
+    ->execute();
+  // Update the users who have this role set.
+  db_delete('og_users_roles')
+    ->condition('rid', $rid)
+    ->execute();
+
+  module_invoke_all('og_user_role_delete', $role);
+
+  og_invalidate_cache();
+}
+
+/**
+ * Delete all roles belonging to a group.
+ *
+ * @param $gid
+ *   The group ID.
+ */
+function og_delete_user_roles_by_group($gid) {
+  // Check if group has overriden roles defined.
+  if ($roles = og_user_roles($gid, NULL, TRUE)) {
+    foreach ($roles as $rid => $name) {
+      og_user_role_delete($rid);
+    }
+  }
+}
+
+/**
+ * Get the role names of role IDs.
+ *
+ * @param $rids
+ *   Array with role IDs.
+ * @return
+ *  Array keyed by the role ID, and the role name as the value.
+ */
+function og_get_user_roles_name($rids = array()) {
+  return dbtng_query("SELECT rid, name FROM {og_role} WHERE rid IN (:rids)", array(':rids' => $rids))->fetchAllKeyed();
+}
+
+
+/**
+ * Delete all permissions defined by a module.
+ *
+ * @see og_modules_uninstalled()
+ *
+ * @param $module
+ *   Array with the modules name.
+ */
+function og_permissions_delete_by_module($modules = array()) {
+   db_delete('og_role_permission')
+     ->condition('module', $modules, 'IN')
+     ->execute();
+}
+
+/**
+ * Create new roles, based on the default roles and permissions.
+ *
+ * @param $gid
+ *   The group ID.
+ * @return
+ *   The newly created roles keyed by role ID and role name as the value. Or
+ *   FALSE if no roles were created.
+ */
+function og_user_roles_override($gid) {
+  // Check if roles aren't already overriden. We can't use
+  // og_is_group_default_access() as the field is already set, so we
+  // check to see if there are new roles in the database and compare
+  // them with the default roles.
+  // TODO: We can add a key to the $group object that will indicate this
+  // if performance will be poor.
+
+  if ($roles = og_user_roles($gid, NULL, TRUE)) {
+    return;
+  }
+
+  $rids = array();
+  // Make sure roles doesn't exist already by looking for a row with the group
+  // ID in {og_role} table.
+  $perms = og_get_global_permissions();
+
+  foreach (og_get_global_roles() as $rid => $name) {
+    $role = new stdClass;
+    $role->name = $name;
+    $role->gid = $gid;
+
+    og_user_role_save($role);
+    $rids[$role->rid] = $role->name;
+    og_user_role_change_permissions($role->rid, $perms[$rid]);
+  }
+
+  return $rids;
+}
+
+/**
+ * Grant a group role to a user.
+ *
+ * @param $uid
+ *   The user ID.
+ * @param $rid
+ *   The role ID.
+ */
+function og_users_roles_grant($gid, $uid, $rid) {
+  // Get the existiong user roles.
+  $user_roles = og_get_user_roles($gid, $uid);
+  if (!in_array($rid, $user_roles)) {
+    $role = new stdClass();
+    $role->uid = $uid;
+    $role->rid = $rid;
+    $role->gid = $gid;
+
+    drupal_write_record('og_users_roles', $role);
+    module_invoke_all('og_users_roles_grant', $gid, $uid, $rid);
+  }
+}
+
+/**
+ * Revoke a group role from a user.
+ *
+ * @param $uid
+ *   The user ID.
+ * @param $rid
+ *   The role ID.
+ */
+function og_users_roles_revoke($gid, $uid, $rid) {
+  // Get the existiong user roles.
+  $user_roles = og_get_user_roles($gid, $uid);
+  if (in_array($rid, $user_roles)) {
+
+    db_delete('og_users_roles')
+      ->condition('uid', $uid)
+      ->condition('rid', $rid)
+      ->execute();
+    module_invoke_all('og_users_roles_revoke', $gid, $uid, $rid);
+  }
+}
+
+/**
+ * Change permissions for a user role.
+ *
+ * This function may be used to grant and revoke multiple permissions at once.
+ * For example, when a form exposes checkboxes to configure permissions for a
+ * role, the submitted values may be directly passed on in a form submit
+ * handler.
+ *
+ * @param $rid
+ *   The ID of a group user role to alter.
+ * @param $permissions
+ *   An array of permissions, where the key holds the permission name and the
+ *   value is an integer or boolean that determines whether to grant or revoke
+ *   the permission:
+ *   @code
+ *     array(
+ *       'edit group' => 0,
+ *       'administer group' => 1,
+ *     )
+ *   @endcode
+ *   Existing permissions are not changed, unless specified in $permissions.
+ *
+ * @see og_user_role_grant_permissions()
+ * @see og_user_role_revoke_permissions()
+ */
+function og_user_role_change_permissions($rid, array $permissions = array()) {
+  // Grant new permissions for the role.
+  $grant = array_filter($permissions);
+  if (!empty($grant)) {
+    og_user_role_grant_permissions($rid, array_keys($grant));
+  }
+  // Revoke permissions for the role.
+  $revoke = array_diff_assoc($permissions, $grant);
+  if (!empty($revoke)) {
+    og_user_role_revoke_permissions($rid, array_keys($revoke));
+  }
+}
+
+/**
+ * Grant permissions to a user role.
+ *
+ * @param $rid
+ *   The ID of a user role to alter.
+ * @param $permissions
+ *   A list of permission names to grant.
+ *
+ * @see user_role_change_permissions()
+ * @see user_role_revoke_permissions()
+ */
+function og_user_role_grant_permissions($rid, array $permissions = array()) {
+  $modules = array();
+  foreach (og_get_permissions() as $name => $value) {
+    $modules[$name] = $value['module'];
+  }
+  // Grant new permissions for the role.
+  foreach ($permissions as $name) {
+    // Prevent WSOD, if the permission name is wrong, and we can't find its
+    // module.
+    if (!empty($modules[$name])) {
+      db_merge('og_role_permission')
+        ->key(array(
+          'rid' => $rid,
+          'permission' => $name,
+          'module' => $modules[$name],
+        ))
+        ->execute();
+    }
+  }
+  og_invalidate_cache();
+}
+
+/**
+ * Revoke permissions from a user role.
+ *
+ * @param $rid
+ *   The ID of a user role to alter.
+ * @param $permissions
+ *   A list of permission names to revoke.
+ *
+ * @see user_role_change_permissions()
+ * @see user_role_grant_permissions()
+ */
+function og_user_role_revoke_permissions($rid, array $permissions = array()) {
+  // Revoke permissions for the role.
+  db_delete('og_role_permission')
+    ->condition('rid', $rid)
+    ->condition('permission', $permissions, 'IN')
+    ->execute();
+
+  og_invalidate_cache();
+}
+
+
+/**
+ * Get all permissions defined by implementing modules.
+ *
+ * @return
+ *  Array keyed with the permissions name and the value of the permissions.
+ *  TODO: Write the values.
+ */
+function og_get_permissions() {
+  $perms = &drupal_static(__FUNCTION__, array());
+  if (!empty($perms)) {
+    return $perms;
+  }
+
+  foreach (module_implements('og_permission') as $module) {
+    if ($permissions = module_invoke($module, 'og_permission')) {
+      foreach ($permissions as $key => $perm) {
+        $permissions[$key] += array(
+          // Initialize the roles key, if other modules haven't set it
+          // explicetly. This means the permissions can apply to anonymous and
+          // authenticated members as-well.
+          'roles' => array(OG_ANONYMOUS_ROLE, OG_AUTHENTICATED_ROLE),
+          'default role' => array(),
+          'module' => $module,
+        );
+      }
+      $perms = array_merge($perms, $permissions);
+    }
+  }
+
+  // Allow other modules to alter the permissions.
+  drupal_alter('og_permission', $perms);
+
+  return $perms;
+}
+
+/**
+ * Get global permissions.
+ *
+ * @return
+ *   Array keyed with the anonymous, authenticated and administror and the
+ *   permissions that should be enabled by default.
+ */
+function og_get_global_permissions() {
+  $roles = og_get_global_roles();
+
+  $perms = og_user_role_permissions($roles);
+  return $perms;
 }
