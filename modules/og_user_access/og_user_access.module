@@ -24,7 +24,6 @@
 // Re-implement needed Drupal 7 API functions in a seperate file.
 require_once dirname(__FILE__) . '/includes/d7.api.inc';
 
-
 /**
  * Group default roles and permissions field.
  *

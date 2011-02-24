@@ -1,0 +1,6 @@
+name = Organic groups UI
+description = "Organic groups UI."
+package = "Organic groups"
+dependencies[] = og
+dependencies[] = og_user_access
+core = 6.x
