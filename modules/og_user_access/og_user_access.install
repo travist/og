@@ -105,10 +105,10 @@ function og_user_access_schema() {
 /**
  * Implementation of hook_install().
  */
-function og_access_install() {
+function og_user_access_install() {
   drupal_install_schema('og_user_access');
 }
 
-function og_access_uninstall() {
+function og_user_access_uninstall() {
   drupal_uninstall_schema('og_user_access');
 }
