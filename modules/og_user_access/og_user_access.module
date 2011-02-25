@@ -25,6 +25,22 @@
 require_once dirname(__FILE__) . '/includes/d7.api.inc';
 
 /**
+ * Define active group content states.
+ */
+define('OG_STATE_ACTIVE', 1);
+
+/**
+ * Define pending group content states. The user is subscribed to the group but
+ * isn't an active member yet.
+ */
+define('OG_STATE_PENDING', 2);
+
+/**
+ * Define blocked group content states. The user is rejected from the group.
+ */
+define('OG_STATE_BLOCKED', 3);
+
+/**
  * Group default roles and permissions field.
  *
  * @todo - /BACKPORT/ This is an entity field that flags groups with
@@ -78,7 +94,7 @@ function og_og_permission() {
   );
 
   foreach (node_get_types() as $type) {
-    $perms = array_merge($perms, og_list_permissions($type));
+    $perms = array_merge($perms, og_list_permissions($type->type));
   }
 
   return $perms;
@@ -240,8 +256,8 @@ function og_is_group_default_access($gid) {
   // @todo - /BACKPORT/ This tests an entity field that flags groups with
   //  non-default permissions, that would be CCK in D6, but we may not want
   //  CCK dependency.
-  //$return = TRUE;
-  $return = FALSE; // @todo - /BACKPORT/ Force custom perms on for now.
+  $return = TRUE;
+//  $return = FALSE; // @todo - /BACKPORT/ Force custom perms on for now.
   if ($node = node_load($gid)) {
 
     $property = OG_DEFAULT_ACCESS_FIELD;
@@ -864,6 +880,17 @@ function og_get_global_permissions() {
 
   $perms = og_user_role_permissions($roles);
   return $perms;
+}
+
+/**
+ * Return the states a group can be in.
+ */
+function og_group_content_states() {
+  return array(
+    OG_STATE_ACTIVE => t('Active'),
+    OG_STATE_PENDING => t('Pending'),
+    OG_STATE_BLOCKED => t('Blocked'),
+  );
 }
 
 /**

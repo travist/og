@@ -70,4 +70,18 @@ if (!function_exists('drupal_static')) {
   function drupal_static_reset($name = NULL) {
     drupal_static($name, NULL, TRUE);
   }
+
+  //@todo /BACKPORT/ this is for og_ui.. move it there?
+  function drupal_render_children(&$element, $children_keys = NULL) {
+    if ($children_keys === NULL) {
+      $children_keys = element_children($element);
+    }
+    $output = '';
+    foreach ($children_keys as $key) {
+      if (!empty($element[$key])) {
+        $output .= drupal_render($element[$key]);
+      }
+    }
+    return $output;
+  }
 }

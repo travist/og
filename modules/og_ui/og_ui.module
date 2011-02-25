@@ -165,7 +165,7 @@ function og_ui_menu() {
  */
 function og_ui_menu_title_callback($title, $gid) {
   $group = node_load($gid);
-  return str_replace('@group', $node->title, $title);
+  return str_replace('@group', $group->title, $title);
 }
 
 /**
